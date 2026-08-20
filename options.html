@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>cysider 设置</title>
+    <link rel="stylesheet" href="options.css">
+  </head>
+  <body>
+    <div class="page">
+      <header>
+        <img src="icon-48.png" alt="" class="logo">
+        <div>
+          <h1>cysider 设置</h1>
+          <p class="sub">个人 DeepSeek 侧边栏插件 · API Key 仅保存在本机扩展存储中</p>
+        </div>
+      </header>
+
+      <section class="card">
+        <h2>DeepSeek 配置</h2>
+        <div class="row">
+          <label for="apiKey">API Key</label>
+          <div class="field">
+            <input type="password" id="apiKey" placeholder="sk-..." autocomplete="off">
+            <button type="button" id="toggleKey" class="mini">显示</button>
+          </div>
+          <p class="hint">只写入 chrome.storage.local，只会发送到你配置的 API 地址。</p>
+        </div>
+        <div class="row">
+          <label for="apiUrl">API 地址</label>
+          <input type="text" id="apiUrl" class="wide" placeholder="https://api.deepseek.com/chat/completions">
+          <p class="hint">默认 DeepSeek 官方端点，可改为兼容 OpenAI 格式的代理地址。</p>
+        </div>
+        <div class="row">
+          <label for="model">模型</label>
+          <select id="model">
+            <option value="deepseek-v4-flash">deepseek-v4-flash（V4，快速通用，默认）</option>
+            <option value="deepseek-v4-pro">deepseek-v4-pro（V4，更强推理）</option>
+          </select>
+        </div>
+        <div class="row">
+          <label for="thinking">思考模式</label>
+          <div class="switch-row">
+            <label class="switch">
+              <input type="checkbox" id="thinking">
+              <span class="slider"></span>
+            </label>
+            <span id="thinkingLabel" class="switch-label">开启（回答前先深度思考）</span>
+          </div>
+        </div>
+        <div class="row" id="effortRow">
+          <label for="effort">思考强度</label>
+          <select id="effort">
+            <option value="low">low（较快）</option>
+            <option value="high">high（默认，推荐）</option>
+            <option value="max">max（最深入）</option>
+          </select>
+        </div>
+        <div class="row">
+          <label for="temperature">温度（0–2）</label>
+          <input type="number" id="temperature" min="0" max="2" step="0.1" value="0.7">
+          <p class="hint">控制回复随机性，0 更稳定，2 更发散。</p>
+        </div>
+        <div class="actions">
+          <button type="button" id="testBtn" class="secondary">测试连接</button>
+          <button type="button" id="saveBtn" class="primary">保存配置</button>
+          <span id="statusMsg" class="status" hidden></span>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>右键菜单 / 划词菜单</h2>
+        <p class="hint">用 <code>{text}</code> 表示选中文字，<code>{pageUrl}</code> 表示当前页面地址。</p>
+        <div id="menuList"></div>
+        <div class="actions">
+          <button type="button" id="addMenuBtn" class="secondary">+ 添加菜单</button>
+          <button type="button" id="resetMenusBtn" class="secondary">恢复默认</button>
+        </div>
+      </section>
+
+      <footer class="foot">cysider v0.2.0 · 网络请求仅发往你配置的 DeepSeek API</footer>
+    </div>
+    <script src="deepseek-api.js"></script>
+    <script src="options.js"></script>
+  </body>
+</html>

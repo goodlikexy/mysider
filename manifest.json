@@ -1,0 +1,61 @@
+{
+   "manifest_version": 3,
+   "name": "cysider",
+   "version": "0.2.0",
+   "description": "个人 DeepSeek 侧边栏插件：右键/划词发送 DeepSeek、网页框选截图、本地 OCR、笔记精炼与本地 Markdown 导出。所有网络请求仅发往你自己配置的 DeepSeek API。",
+   "minimum_chrome_version": "114",
+   "action": {
+      "default_icon": {
+         "16": "icon-16.png",
+         "34": "icon-34.png",
+         "48": "icon-48.png",
+         "128": "icon-128.png"
+      },
+      "default_title": "打开 cysider 侧边栏"
+   },
+   "background": {
+      "service_worker": "background.js"
+   },
+   "content_scripts": [
+      {
+         "js": [
+            "content.js"
+         ],
+         "matches": [
+            "http://*/*",
+            "https://*/*"
+         ],
+         "run_at": "document_idle"
+      }
+   ],
+   "icons": {
+      "16": "icon-16.png",
+      "48": "icon-48.png",
+      "128": "icon-128.png"
+   },
+   "options_ui": {
+      "page": "options.html",
+      "open_in_tab": true
+   },
+   "permissions": [
+      "sidePanel",
+      "contextMenus",
+      "windows",
+      "activeTab",
+      "storage",
+      "scripting",
+      "tabs",
+      "downloads"
+   ],
+   "host_permissions": [
+      "http://*/*",
+      "https://*/*"
+   ],
+   "content_security_policy": {
+      "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'; worker-src 'self'"
+   },
+   "side_panel": {
+      "default_path": "sidepanel.html",
+      "openPanelOnActionClick": true
+   }
+}

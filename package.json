@@ -1,0 +1,10 @@
+{
+  "name": "cysider",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "node --check background.js && node --check content.js && node --check deepseek-api.js && node --check options.js && node --check sidepanel.js && node --check capture-overlay.js",
+    "test": "node --test tests/validate.test.mjs"
+  }
+}

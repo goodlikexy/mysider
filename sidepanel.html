@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>cysider</title>
+    <link rel="stylesheet" href="sidepanel.css">
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <img src="icon-34.png" alt="">
+        <span>cysider</span>
+      </div>
+      <div class="top-actions">
+        <button id="exportBtn" class="icon-btn" title="导出会话为 Markdown">⤓</button>
+        <button id="clearBtn" class="icon-btn" title="清空会话">🗑</button>
+        <button id="settingsBtn" class="icon-btn" title="设置">⚙</button>
+      </div>
+    </header>
+
+    <main id="messages" class="messages" aria-live="polite"></main>
+
+    <div id="status" class="status" role="status" hidden></div>
+
+    <footer class="composer">
+      <div class="toolbar">
+        <button id="ocrBtn" class="tool-btn" title="框选截图并本地 OCR 识别">✂ 截图 OCR</button>
+        <button id="noteBtn" class="tool-btn" title="精炼最后一条回答为笔记并保存本地">📝 笔记</button>
+        <button id="thinkBtn" class="tool-btn" title="切换思考模式">💭 思考</button>
+        <select id="effortSel" class="tool-select" title="思考强度（仅思考模式）" hidden>
+          <option value="low">强度：低</option>
+          <option value="high">强度：高</option>
+          <option value="max">强度：最高</option>
+        </select>
+        <span class="toolbar-spacer"></span>
+        <span class="model-tag" id="modelTag" title="点击切换模型（deepseek-v4-flash ↔ deepseek-v4-pro）">…</span>
+      </div>
+      <div class="input-row">
+        <textarea id="input" rows="1" placeholder="输入消息，Enter 发送，Shift+Enter 换行"></textarea>
+        <button id="sendBtn" class="send-btn" title="发送">➤</button>
+      </div>
+    </footer>
+
+    <script src="deepseek-api.js"></script>
+    <script src="vendor/tesseract/tesseract.min.js"></script>
+    <script src="sidepanel.js"></script>
+  </body>
+</html>
