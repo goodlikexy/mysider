@@ -4,11 +4,10 @@
  * 功能：
  *  1. DeepSeek 流式聊天（API Key 读本地配置，请求仅发往 DeepSeek）
  *  2. 右键/划词消息（cysider_prompt）自动发送
- *  3. 网页框选截图 + 本地 Tesseract OCR，结果填入输入框
- *  4. 笔记精炼：最后一条回答 → DeepSeek 精炼 → 保存本地 .md
- *  5. 会话导出：一键保存 .md 到本地
- *  6. 多会话：新聊天 / 历史聊天切换 / 上下文自动截取最近 N 条
- *  7. 性能优化：流式按帧渲染、消息增量追加、延迟保存、智能滚动跟随
+ *  3. 笔记精炼：最后一条回答 → DeepSeek 精炼 → 保存本地 .md
+ *  4. 会话导出：一键保存 .md 到本地
+ *  5. 多会话：新聊天 / 历史聊天切换 / 上下文自动截取最近 N 条
+ *  6. 性能优化：流式按帧渲染、消息增量追加、延迟保存、智能滚动跟随
  * 无任何第三方网络请求。
  */
 (() => {
@@ -29,22 +28,18 @@
     activeId: "",
     busy: false,
     controller: null,
-    worker: null,
-    workerLanguage: "",
-    ocrBusy: false,
-    lastCaptureId: "",
     statusTimer: null
   };
 
   let messagesEl, inputEl, sendBtn, statusEl, modelTag, sessionTitleEl,
-      ocrBtn, noteBtn, thinkBtn, effortSel, exportBtn, clearBtn, settingsBtn,
+      noteBtn, thinkBtn, effortSel, exportBtn, clearBtn, settingsBtn,
       newBtn, historyBtn, historyPanel, historyList, historyCloseBtn, historyNewBtn;
 
   document.addEventListener("DOMContentLoaded", init);
 
   async function init() {
     // 版本标志：刷新扩展后可在 F12 控制台看到此行，用于确认已加载新代码
-    console.info("[cysider] sidepanel loaded · normalize-v3");
+    console.info("[cysider] sidepanel loaded");
     cacheDom();
     bindEvents();
     loadSessions();
@@ -64,7 +59,6 @@
     statusEl = $("status");
     modelTag = $("modelTag");
     sessionTitleEl = $("sessionTitle");
-    ocrBtn = $("ocrBtn");
     noteBtn = $("noteBtn");
     thinkBtn = $("thinkBtn");
     effortSel = $("effortSel");
@@ -94,7 +88,6 @@
       }
     });
     inputEl.addEventListener("input", autoGrow);
-    ocrBtn.addEventListener("click", beginCapture);
     noteBtn.addEventListener("click", onNoteClick);
     thinkBtn.addEventListener("click", toggleThinking);
     effortSel.addEventListener("change", onEffortChange);
@@ -118,31 +111,8 @@
         case "cysider_prompt":
           sendPrompt(message);
           break;
-        case "CYSIDER_OCR_CAPTURE_READY":
-          acceptCapture(message.capture);
-          break;
-        case "CYSIDER_OCR_CAPTURE_ERROR":
-          finishOcrError(message.error?.message || "截图失败");
-          break;
-        case "CYSIDER_OCR_BEGIN_ERROR":
-          finishOcrError(message.error || "无法启动框选");
-          break;
-        case "CYSIDER_OCR_CANCELLED":
-          setOcrBusy(false);
-          showStatus("已取消框选。", "info", 1600);
-          break;
         default:
           break;
-      }
-    });
-
-    chrome.storage.onChanged.addListener((changes, areaName) => {
-      if (areaName !== "session") return;
-      if (changes.cysiderOcrCapture?.newValue) {
-        acceptCapture(changes.cysiderOcrCapture.newValue);
-      }
-      if (changes.cysiderOcrError?.newValue) {
-        finishOcrError(changes.cysiderOcrError.newValue.message || "截图失败");
       }
     });
   }
@@ -248,7 +218,7 @@
     if (messages.length === 0) {
       const tip = document.createElement("div");
       tip.className = "empty-tip";
-      tip.textContent = "你好，我是 cysider ✦\n在下方输入消息，或右键选中网页文字发送给 DeepSeek\n也可以框选截图用本地 OCR 识别文字";
+      tip.textContent = "你好，我是 cysider ✦\n在下方输入消息，或右键选中网页文字发送给 DeepSeek";
       messagesEl.appendChild(tip);
       return;
     }
@@ -427,7 +397,9 @@
     if (streamRaf) return;
     streamRaf = requestAnimationFrame(() => {
       streamRaf = 0;
-      if (pendingStreamEl) {
+      // 防御：仅当消息仍处于 streaming 状态时才写原始文本；
+      // 流已结束（finishStream 渲染完 HTML）时绝不覆盖渲染结果
+      if (pendingStreamEl && pendingStreamEl.closest && pendingStreamEl.closest(".msg.streaming")) {
         pendingStreamEl.textContent = pendingStreamText;
         scrollToBottom();
       }
@@ -593,6 +565,11 @@
 
     /** 流式结束（正常完成或被停止）：渲染正文 Markdown，保留思考折叠块 */
     const finishStream = (text) => {
+      // 关键：清除排队中的流式 rAF 渲染目标，防止下一帧 rAF 回调用
+      // 原始文本 textContent 覆盖刚渲染好的 HTML（真实 DOM 中 textContent
+      // 赋值会清空所有子节点，导致回答显示为原始 Markdown）
+      pendingStreamEl = null;
+      pendingStreamText = "";
       if (reasoningEl && !reasoningAcc) reasoningEl.details.remove();
       try {
         contentEl.innerHTML = renderMarkdown(text);
@@ -678,110 +655,6 @@
   function autoGrow() {
     inputEl.style.height = "auto";
     inputEl.style.height = Math.min(inputEl.scrollHeight, 140) + "px";
-  }
-
-  /* ============ 截图 OCR（本地识别） ============ */
-
-  function beginCapture() {
-    if (state.ocrBusy) return;
-    setOcrBusy(true);
-    showStatus("请在当前网页拖动选择文字区域…", "info", 0);
-    chrome.runtime.sendMessage({ action: "CYSIDER_OCR_BEGIN" }).catch((error) => {
-      finishOcrError(error.message || "无法启动框选");
-    });
-  }
-
-  async function acceptCapture(capture) {
-    if (!capture || !capture.dataUrl || capture.id === state.lastCaptureId) return;
-    state.lastCaptureId = capture.id;
-    setOcrBusy(true);
-    await chrome.storage.session.remove(["cysiderOcrCapture", "cysiderOcrError"]).catch(() => {});
-    try {
-      showStatus("正在裁剪截图…", "info", 0);
-      const cropped = await cropImage(
-        capture.dataUrl,
-        capture.rect,
-        capture.devicePixelRatio,
-        capture.viewportWidth,
-        capture.viewportHeight
-      );
-      const text = await recognize(cropped);
-      if (text) {
-        inputEl.value = text;
-        autoGrow();
-        inputEl.focus();
-        showStatus(`OCR 完成，识别到 ${text.length} 个字符，已填入输入框。`, "ok", 3000);
-      }
-    } catch (error) {
-      finishOcrError(error.message || String(error));
-    } finally {
-      setOcrBusy(false);
-    }
-  }
-
-  async function recognize(imageDataUrl) {
-    if (!globalThis.Tesseract) {
-      throw new Error("本地 OCR 组件未加载，请重新加载扩展。");
-    }
-    if (!state.worker) {
-      showStatus("正在加载本地中英文 OCR 模型，首次使用可能需要几秒…", "info", 0);
-      state.workerLanguage = "eng+chi_sim";
-      state.worker = await Tesseract.createWorker(state.workerLanguage, 1, {
-        workerPath: chrome.runtime.getURL("vendor/tesseract/worker.min.js"),
-        workerBlobURL: false,
-        corePath: chrome.runtime.getURL("vendor/tesseract-core/"),
-        langPath: chrome.runtime.getURL("vendor/lang-data/"),
-        logger: (message) => {
-          if (message.status === "recognizing text") {
-            showStatus(`正在识别文字… ${Math.round((message.progress || 0) * 100)}%`, "info", 0);
-          }
-        }
-      });
-    }
-    const result = await state.worker.recognize(imageDataUrl);
-    const text = (result && result.data && result.data.text || "").trim();
-    if (!text) {
-      throw new Error("没有识别到清晰文字，请缩小框选范围或选择更清晰的区域。");
-    }
-    return text;
-  }
-
-  async function cropImage(dataUrl, rect, devicePixelRatio = 1, viewportWidth, viewportHeight) {
-    const image = await loadImage(dataUrl);
-    const scaleX = viewportWidth ? image.naturalWidth / viewportWidth : devicePixelRatio;
-    const scaleY = viewportHeight ? image.naturalHeight / viewportHeight : devicePixelRatio;
-    const sx = clamp(Math.round(rect.x * scaleX), 0, image.naturalWidth - 1);
-    const sy = clamp(Math.round(rect.y * scaleY), 0, image.naturalHeight - 1);
-    const sw = clamp(Math.round(rect.width * scaleX), 1, image.naturalWidth - sx);
-    const sh = clamp(Math.round(rect.height * scaleY), 1, image.naturalHeight - sy);
-    const canvas = document.createElement("canvas");
-    canvas.width = sw;
-    canvas.height = sh;
-    canvas.getContext("2d").drawImage(image, sx, sy, sw, sh, 0, 0, sw, sh);
-    return canvas.toDataURL("image/png");
-  }
-
-  function loadImage(src) {
-    return new Promise((resolve, reject) => {
-      const image = new Image();
-      image.onload = () => resolve(image);
-      image.onerror = () => reject(new Error("无法读取截图。"));
-      image.src = src;
-    });
-  }
-
-  function clamp(value, minimum, maximum) {
-    return Math.min(maximum, Math.max(minimum, value));
-  }
-
-  function setOcrBusy(busy) {
-    state.ocrBusy = busy;
-    ocrBtn.disabled = busy;
-  }
-
-  function finishOcrError(message) {
-    setOcrBusy(false);
-    showStatus("截图 OCR 失败：" + message, "error", 6000);
   }
 
   /* ============ 笔记精炼 ============ */

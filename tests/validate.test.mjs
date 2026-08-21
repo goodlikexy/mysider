@@ -17,8 +17,7 @@ async function readAllSources() {
     "options.css",
     "sidepanel.html",
     "sidepanel.js",
-    "sidepanel.css",
-    "capture-overlay.js"
+    "sidepanel.css"
   ];
   return Promise.all(files.map(async (f) => ({
     name: f,
@@ -49,12 +48,13 @@ test("manifest declares the cysider contract", () => {
   assert.ok(!manifest.host_permissions.includes("<all_urls>"), "must not request <all_urls>");
   assert.equal(manifest.update_url, undefined);
   assert.equal(manifest.key, undefined);
-  assert.match(manifest.content_security_policy.extension_pages, /wasm-unsafe-eval/);
+  assert.ok(!manifest.content_security_policy.extension_pages.includes("wasm-unsafe-eval"), "OCR wasm is removed, must not need wasm-unsafe-eval");
   assert.match(manifest.content_security_policy.extension_pages, /worker-src 'self'/);
   assert.equal(manifest.side_panel.default_path, "sidepanel.html");
   assert.equal(manifest.options_ui.page, "options.html");
   assert.ok(manifest.permissions.includes("contextMenus"));
-  assert.ok(manifest.permissions.includes("scripting"));
+  assert.ok(!manifest.permissions.includes("scripting"), "OCR scripting permission must be removed");
+  assert.ok(!manifest.permissions.includes("activeTab"), "OCR activeTab permission must be removed");
 });
 
 test("no Alibaba / third-party tracking references anywhere", async () => {
@@ -91,15 +91,10 @@ test("storage keys and message actions use the cysider prefix", async () => {
   const { text: bg } = (await readAllSources()).find((s) => s.name === "background.js");
   const { text: panel } = (await readAllSources()).find((s) => s.name === "sidepanel.js");
   const { text: api } = (await readAllSources()).find((s) => s.name === "deepseek-api.js");
-  const { text: overlay } = (await readAllSources()).find((s) => s.name === "capture-overlay.js");
   assert.ok(api.includes("cysiderConfig"));
   assert.ok(bg.includes("cysiderMenus"));
-  assert.ok(panel.includes("cysiderOcrCapture"));
   assert.ok(panel.includes("cysiderChatHistory"));
   assert.ok(bg.includes("cysider_prompt"));
-  assert.ok(bg.includes("CYSIDER_OCR_REGION"));
-  assert.ok(overlay.includes("CYSIDER_OCR_REGION"));
-  assert.ok(overlay.includes("cysider-ocr-capture-layer"));
 });
 
 test("side panel supports multi-session and streaming perf", async () => {
@@ -119,6 +114,9 @@ test("side panel supports multi-session and streaming perf", async () => {
   assert.ok(panel.includes("slice(-CTX_WINDOW)"));
   // 流式性能：按帧节流渲染
   assert.ok(panel.includes("requestAnimationFrame"));
+  // rAF 竞态修复：流结束后不得再被 rAF 回调用原始文本覆盖渲染结果
+  assert.match(panel, /pendingStreamEl = null/, "finishStream must clear the pending stream render");
+  assert.ok(panel.includes('closest(".msg.streaming")'), "stream rAF must guard on the streaming state");
   // 回答不自动折叠（仅思考过程折叠）：不再出现 maybeCollapse / expand-btn
   assert.ok(!panel.includes("maybeCollapse"), "long answers must not be auto-collapsed");
   assert.ok(!panel.includes("expand-btn"), "no expand button for answers");
@@ -246,27 +244,12 @@ test("renderMarkdown renders markdown and survives hostile input", async () => {
   assert.doesNotThrow(() => renderMarkdown("| ".repeat(100000)));
 });
 
-test("side panel OCR stays fully local", async () => {
-  const { text } = (await readAllSources()).find((s) => s.name === "sidepanel.js");
-  assert.match(text, /workerBlobURL:\s*false/);
-  assert.match(text, /vendor\/tesseract\/worker\.min\.js/);
-  assert.match(text, /vendor\/tesseract-core\//);
-  assert.match(text, /vendor\/lang-data\//);
-  assert.ok(!text.includes("fetch("), "OCR must not fetch anything");
-});
-
 test("all required assets exist", async () => {
   const required = [
     "background.js", "content.js", "deepseek-api.js",
-    "capture-overlay.js",
     "options.html", "options.js", "options.css",
     "sidepanel.html", "sidepanel.js", "sidepanel.css",
     "icon-16.png", "icon-34.png", "icon-48.png", "icon-128.png",
-    "vendor/tesseract/tesseract.min.js",
-    "vendor/tesseract/worker.min.js",
-    "vendor/tesseract-core/tesseract-core-simd-lstm.wasm.js",
-    "vendor/lang-data/eng.traineddata.gz",
-    "vendor/lang-data/chi_sim.traineddata.gz",
     "vendor/fonts/lxgw-wenkai.css",
     "vendor/fonts/lxgwwenkai-regular-subset-4.woff2",
     "vendor/fonts/lxgwwenkai-bold-subset-4.woff2"
@@ -284,10 +267,4 @@ test("no leftover original bundles or boilerplate pages", async () => {
     assert.ok(!/\.bundle\.js$/.test(f), `bundle file must be removed: ${f}`);
     assert.ok(!["newtab.html", "popup.html", "panel.html", "devtools.html"].includes(f), `boilerplate page must be removed: ${f}`);
   }
-});
-
-test("selection overlay keeps square-cornered capture", async () => {
-  const { text } = (await readAllSources()).find((s) => s.name === "capture-overlay.js");
-  assert.match(text, /borderRadius:\s*"0"/);
-  assert.match(text, /viewportWidth:\s*window\.innerWidth/);
 });

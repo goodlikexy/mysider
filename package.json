@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "check": "node --check background.js && node --check content.js && node --check deepseek-api.js && node --check options.js && node --check sidepanel.js && node --check capture-overlay.js",
+    "check": "node --check background.js && node --check content.js && node --check deepseek-api.js && node --check options.js && node --check sidepanel.js",
     "test": "node --test tests/validate.test.mjs"
   }
 }
