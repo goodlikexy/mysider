@@ -43,6 +43,8 @@
   document.addEventListener("DOMContentLoaded", init);
 
   async function init() {
+    // 版本标志：刷新扩展后可在 F12 控制台看到此行，用于确认已加载新代码
+    console.info("[cysider] sidepanel loaded · normalize-v3");
     cacheDom();
     bindEvents();
     loadSessions();
@@ -987,10 +989,20 @@
   }
 
   function renderMarkdown(text) {
-    let raw = String(text || "").replace(/\r\n/g, "\n");
-    // 输入归一化 1：模型/代理偶发输出字面 "\n" 转义（全文无真实换行）→ 转成真实换行，
-    // 否则整段会被吞进单个标题，##/表格全部原样显示。仅在无真实换行时转换，避免破坏代码示例。
-    if (!raw.includes("\n") && /\\[rn]/.test(raw)) {
+    // 真实行尾统一：\r\n 与 \r-only（旧 Mac 风格）都转成 \n，
+    // 否则 \r-only 内容会整段挤成一行，##/---/列表全部原样显示
+    let raw = String(text || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+    // 输入归一化 1：模型/代理偶发输出字面 "\n" 转义（而非真实换行），
+    // 否则整段会被吞进单个标题，##/---/表格全部原样显示。
+    // 仅在"纯转义拼接（无真实换行）"或"字面转义明显多于真实换行（混合、转义占主导）"时转换，
+    // 避免破坏代码示例里本意的 \n 字符串（真实换行占主导时保留）。
+    const realNlCount = (raw.match(/\n/g) || []).length;
+    const literalNlCount = (raw.match(/\\[rn]/g) || []).length;
+    if (literalNlCount > 0 && (realNlCount === 0 || literalNlCount > realNlCount)) {
+      if (!renderMarkdown.normalizeNoticed) {
+        renderMarkdown.normalizeNoticed = true; // 一次性提示（防刷屏）
+        console.info("[cysider] 检测到字面 \\n 转义，已自动转换换行。输入前缀：", raw.slice(0, 80));
+      }
       raw = raw.replace(/\\r\\n/g, "\n").replace(/\\n/g, "\n").replace(/\\r/g, "\n");
     }
     // 输入归一化 2：整段被单个 Markdown 围栏包裹（如 ```markdown ... ```）→ 剥离围栏按正文渲染；

@@ -216,6 +216,26 @@ test("renderMarkdown renders markdown and survives hostile input", async () => {
   const escapedOut = renderMarkdown(escaped);
   assert.ok(escapedOut.includes("<h2>"), "escaped newlines must be normalized");
 
+  // 混合换行（少量真实换行 + 字面 \n 占主导）→ 同样归一化，不再挤成一行的原始格式
+  const mixed = "开头真实换行段。\n\n\\n\\n---\\n\\n## 混合标题\\n\\n结尾段。";
+  const mixedOut = renderMarkdown(mixed);
+  assert.ok(mixedOut.includes("<h2>"), "mixed escaped newlines must be normalized");
+  assert.ok(mixedOut.includes("<hr>"), "mixed content must render the hr");
+  assert.ok(!mixedOut.includes("##"), "no raw heading residue in mixed content");
+
+  // \r-only 行尾（旧 Mac 风格，只有回车没有换行）→ 归一化后正常渲染
+  const crOnly = "开头段。\r\r---\r\r## 标题\r\r- 项1\r- 项2";
+  const crOut = renderMarkdown(crOnly);
+  assert.ok(crOut.includes("<h2>"), "carriage-return-only content must be normalized");
+  assert.ok(crOut.includes("<hr>"), "cr-only content must render the hr");
+  assert.ok(crOut.includes("<ul>"), "cr-only content must render the list");
+  assert.ok(!crOut.includes("---"), "no raw hr residue in cr-only content");
+
+  // 真实换行占主导 + 代码示例里的字面 \n → 必须保留（保护本意的转义字符串）
+  const codeSample = "第一行真实换行。\n第二行真实换行。\n\n```js\nconsole.log(\"a\\nb\");\n```";
+  const codeSampleOut = renderMarkdown(codeSample);
+  assert.ok(codeSampleOut.includes("\\n"), "literal \\n inside real code must be preserved");
+
   // 带明确代码语言的整体围栏 → 保持代码块，不解包
   const js = "```js\nconst a = 1;\n```";
   assert.ok(renderMarkdown(js).includes("<pre>"), "real code fence stays a code block");
