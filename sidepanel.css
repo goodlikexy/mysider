@@ -404,16 +404,3 @@ body {
 }
 .send-btn:hover { background: #3b5bdb; }
 .send-btn:disabled { background: #a5b4fc; cursor: wait; }
-
-/* ===== Token 统计条 ===== */
-.token-stat {
-  margin-top: 6px;
-  font-size: 11px;
-  color: var(--muted);
-  line-height: 1.6;
-  text-align: right;
-  word-break: break-all;
-}
-.token-stat[hidden] { display: none; }
-.token-stat .ts-cache-hit { color: #16a34a; }
-.token-stat .ts-cache-miss { color: #b45309; }

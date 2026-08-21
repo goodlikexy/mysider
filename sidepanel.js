@@ -8,8 +8,7 @@
  *  4. 笔记精炼：最后一条回答 → DeepSeek 精炼 → 保存本地 .md
  *  5. 会话导出：一键保存 .md 到本地
  *  6. 多会话：新聊天 / 历史聊天切换 / 上下文自动截取最近 N 条
- *  7. Token 统计：输入/输出/缓存命中（本次 + 当前会话累计）
- *  8. 性能优化：流式按帧渲染、消息增量追加、延迟保存、智能滚动跟随
+ *  7. 性能优化：流式按帧渲染、消息增量追加、延迟保存、智能滚动跟随
  * 无任何第三方网络请求。
  */
 (() => {
@@ -33,16 +32,12 @@
     workerLanguage: "",
     ocrBusy: false,
     lastCaptureId: "",
-    statusTimer: null,
-    // token 统计：本次 + 当前会话累计
-    lastUsage: null,
-    totalUsage: { prompt: 0, completion: 0, cacheHit: 0, cacheMiss: 0 }
+    statusTimer: null
   };
 
   let messagesEl, inputEl, sendBtn, statusEl, modelTag, sessionTitleEl,
       ocrBtn, noteBtn, thinkBtn, effortSel, exportBtn, clearBtn, settingsBtn,
-      newBtn, historyBtn, historyPanel, historyList, historyCloseBtn, historyNewBtn,
-      tokenStat;
+      newBtn, historyBtn, historyPanel, historyList, historyCloseBtn, historyNewBtn;
 
   document.addEventListener("DOMContentLoaded", init);
 
@@ -79,7 +74,6 @@
     historyList = $("historyList");
     historyCloseBtn = $("historyCloseBtn");
     historyNewBtn = $("historyNewBtn");
-    tokenStat = $("tokenStat");
   }
 
   function bindEvents() {
@@ -582,8 +576,7 @@
         onDelta: (piece) => {
           acc += piece;
           scheduleStreamRender(assistantEl, acc);
-        },
-        onUsage: (usage) => handleUsage(usage)
+        }
       });
       session.messages.push({ role: "assistant", content: reply, ts: Date.now() });
       touchSession(session);
@@ -631,35 +624,6 @@
       state.controller = null;
       setBusyUi(false);
     }
-  }
-
-  /* ============ Token 统计（本次 + 累计） ============ */
-
-  function handleUsage(usage) {
-    if (!usage) return;
-    const prompt = usage.prompt_tokens || 0;
-    const completion = usage.completion_tokens || 0;
-    const hit = usage.prompt_cache_hit_tokens || 0;
-    const miss = usage.prompt_cache_miss_tokens || 0;
-    state.lastUsage = { prompt, completion, hit, miss };
-    state.totalUsage.prompt += prompt;
-    state.totalUsage.completion += completion;
-    state.totalUsage.cacheHit += hit;
-    state.totalUsage.cacheMiss += miss;
-    renderTokenStat();
-  }
-
-  function renderTokenStat() {
-    if (!state.lastUsage) return;
-    const t = state.totalUsage;
-    const fmt = (n) => n.toLocaleString("en-US");
-    // 两行紧凑排版，避免在窄侧边栏里拉成超长单行
-    tokenStat.innerHTML =
-      `本次 ↑ ${fmt(state.lastUsage.prompt)} · ↓ ${fmt(state.lastUsage.completion)}` +
-      `　累计 ↑ ${fmt(t.prompt)} · ↓ ${fmt(t.completion)}<br>` +
-      `<span class="ts-cache-hit" title="缓存命中（计费更低）">缓存命中 ${fmt(state.lastUsage.hit)}</span>` +
-      ` / <span class="ts-cache-miss" title="缓存未命中">未命中 ${fmt(state.lastUsage.miss)}</span>`;
-    tokenStat.hidden = false;
   }
 
   function abortStream() {
