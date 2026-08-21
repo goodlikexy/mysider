@@ -10,14 +10,28 @@
     <header class="topbar">
       <div class="brand">
         <img src="icon-34.png" alt="">
-        <span>cysider</span>
+        <span id="sessionTitle" class="session-title" title="当前会话">cysider</span>
       </div>
       <div class="top-actions">
-        <button id="exportBtn" class="icon-btn" title="导出会话为 Markdown">⤓</button>
-        <button id="clearBtn" class="icon-btn" title="清空会话">🗑</button>
+        <button id="newBtn" class="icon-btn" title="新聊天">＋</button>
+        <button id="historyBtn" class="icon-btn" title="历史聊天">🕘</button>
+        <button id="exportBtn" class="icon-btn" title="导出当前会话为 Markdown">⤓</button>
+        <button id="clearBtn" class="icon-btn" title="清空当前会话">🗑</button>
         <button id="settingsBtn" class="icon-btn" title="设置">⚙</button>
       </div>
     </header>
+
+    <!-- 历史聊天抽屉 -->
+    <div id="historyPanel" class="history-panel" hidden>
+      <div class="history-head">
+        <span>历史聊天</span>
+        <button id="historyCloseBtn" class="mini-btn" title="关闭">✕</button>
+      </div>
+      <div id="historyList" class="history-list"></div>
+      <div class="history-foot">
+        <button id="historyNewBtn" class="mini-btn primary">＋ 新建聊天</button>
+      </div>
+    </div>
 
     <main id="messages" class="messages" aria-live="polite"></main>
 
@@ -40,6 +54,7 @@
         <textarea id="input" rows="1" placeholder="输入消息，Enter 发送，Shift+Enter 换行"></textarea>
         <button id="sendBtn" class="send-btn" title="发送">➤</button>
       </div>
+      <div id="tokenStat" class="token-stat" hidden></div>
     </footer>
 
     <script src="deepseek-api.js"></script>

@@ -27,9 +27,15 @@ body {
   background: var(--bg);
   color: var(--ink);
   font-family: "LXGW WenKai", "PingFang SC", "Microsoft YaHei", sans-serif;
-  font-size: 15px;
-  line-height: 1.65;
+  font-size: 14px;
+  line-height: 1.55;
   overflow: hidden;
+}
+
+/* 消息内容改用系统字体：霞鹜文楷为手写体，长文本/流式逐字渲染开销大，
+   系统字体渲染快得多，UI 控件仍保留手写体风格 */
+.messages, .msg, .markdown-body, #input {
+  font-family: "PingFang SC", "Microsoft YaHei", "Noto Sans SC", system-ui, sans-serif;
 }
 
 /* ===== 顶栏 ===== */
@@ -67,18 +73,115 @@ body {
 }
 .icon-btn:hover { background: #f0f1f4; color: var(--ink); }
 
+.session-title {
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+  font-weight: 400;
+  color: var(--muted);
+}
+
+/* ===== 历史聊天抽屉 ===== */
+.history-panel {
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: min(280px, 82%);
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  background: #fff;
+  border-right: 1px solid var(--line);
+  box-shadow: 4px 0 24px rgba(15, 23, 42, 0.16);
+}
+.history-panel[hidden] { display: none; }
+.history-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line);
+  font-weight: 700;
+  font-size: 14px;
+}
+.mini-btn {
+  font-family: inherit;
+  font-size: 12px;
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  cursor: pointer;
+  color: var(--ink);
+}
+.mini-btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.mini-btn:hover { border-color: var(--accent); }
+.history-list {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.history-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1.4;
+}
+.history-item:hover { background: #f3f4f6; }
+.history-item.active { background: #eef1ff; }
+.history-item .h-title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink);
+}
+.history-item .h-time {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--muted);
+}
+.history-item .h-del {
+  flex: 0 0 auto;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 13px;
+  padding: 2px 4px;
+  border-radius: 6px;
+  visibility: hidden;
+}
+.history-item:hover .h-del { visibility: visible; }
+.history-item .h-del:hover { color: var(--danger); background: #fee2e2; }
+.history-foot {
+  padding: 10px;
+  border-top: 1px solid var(--line);
+}
+.history-foot .mini-btn { width: 100%; padding: 7px 0; }
+
 /* ===== 消息区 ===== */
 .messages {
   flex: 1 1 auto;
   overflow-y: auto;
-  padding: 14px 12px 10px;
+  padding: 12px 10px 8px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 10px;
 }
 .msg {
-  max-width: 88%;
-  padding: 10px 13px;
+  max-width: 82%;
+  padding: 8px 12px;
   border-radius: var(--radius);
   word-break: break-word;
   white-space: pre-wrap;
@@ -120,6 +223,26 @@ body {
 
 /* 助手消息 Markdown 排版（本地渲染） */
 .markdown-body { white-space: normal; }
+.msg.assistant.collapsible { display: flex; flex-direction: column; align-items: stretch; }
+.msg.assistant .markdown-body.collapsed {
+  max-height: 300px;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(to bottom, #000 55%, transparent 100%);
+  mask-image: linear-gradient(to bottom, #000 55%, transparent 100%);
+}
+.expand-btn {
+  align-self: center;
+  margin-top: 6px;
+  font-family: inherit;
+  font-size: 12px;
+  padding: 3px 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #f5f6f8;
+  color: var(--muted);
+  cursor: pointer;
+}
+.expand-btn:hover { border-color: var(--accent); color: var(--accent); }
 .markdown-body > *:first-child { margin-top: 0; }
 .markdown-body > *:last-child { margin-bottom: 0; }
 .markdown-body h1, .markdown-body h2, .markdown-body h3,
@@ -257,7 +380,6 @@ body {
   border: 1px solid var(--line);
   border-radius: 12px;
   padding: 9px 12px;
-  font-family: inherit;
   font-size: 14px;
   line-height: 1.55;
   max-height: 140px;
@@ -282,3 +404,16 @@ body {
 }
 .send-btn:hover { background: #3b5bdb; }
 .send-btn:disabled { background: #a5b4fc; cursor: wait; }
+
+/* ===== Token 统计条 ===== */
+.token-stat {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.6;
+  text-align: right;
+  word-break: break-all;
+}
+.token-stat[hidden] { display: none; }
+.token-stat .ts-cache-hit { color: #16a34a; }
+.token-stat .ts-cache-miss { color: #b45309; }

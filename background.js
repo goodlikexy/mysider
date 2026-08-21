@@ -26,8 +26,18 @@ let pendingPrompt = null;
 
 /* ============ 侧边栏消息投递 ============ */
 
+// 兜底：Chrome 114/115 不支持 manifest 里 side_panel.openPanelOnActionClick（116+ 才支持），
+// 必须编程式调用 setPanelBehavior 才能在点击工具栏图标时打开侧边栏。
+// 116+ 上该调用与 manifest 声明一致，冗余执行无害。
+if (globalThis.chrome && chrome.sidePanel && typeof chrome.sidePanel.setPanelBehavior === "function") {
+  chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
+}
+
 async function openSidePanel() {
   try {
+    if (!chrome.sidePanel || typeof chrome.sidePanel.open !== "function") {
+      throw new Error("当前 Chrome 版本过低（侧边栏编程打开需 Chrome 116+），请点击浏览器工具栏的 cysider 图标打开侧边栏。");
+    }
     const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
     if (tab && tab.windowId) {
       await chrome.sidePanel.open({ windowId: tab.windowId });

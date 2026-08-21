@@ -87,6 +87,35 @@ test("storage keys and message actions use the cysider prefix", async () => {
   assert.ok(overlay.includes("cysider-ocr-capture-layer"));
 });
 
+test("side panel supports multi-session, token stats and streaming perf", async () => {
+  const { text: panel } = (await readAllSources()).find((s) => s.name === "sidepanel.js");
+  const { text: html } = (await readAllSources()).find((s) => s.name === "sidepanel.html");
+  const { text: api } = (await readAllSources()).find((s) => s.name === "deepseek-api.js");
+  const { text: bg } = (await readAllSources()).find((s) => s.name === "background.js");
+  // 多会话：新聊天 / 历史 / 旧数据迁移
+  assert.ok(panel.includes("cysiderSessions"));
+  assert.ok(panel.includes("cysiderActiveSessionId"));
+  assert.ok(panel.includes("LEGACY_HISTORY_KEY"));
+  assert.ok(html.includes("newBtn"));
+  assert.ok(html.includes("historyBtn"));
+  assert.ok(html.includes("historyPanel"));
+  // 上下文窗口：防无限增长
+  assert.ok(panel.includes("CTX_WINDOW"));
+  assert.ok(panel.includes("slice(-CTX_WINDOW)"));
+  // Token 统计：本次 + 累计 + 缓存命中
+  assert.ok(html.includes("tokenStat"));
+  assert.ok(panel.includes("handleUsage"));
+  assert.ok(panel.includes("prompt_cache_hit_tokens"));
+  assert.ok(api.includes("onUsage"), "DeepSeek module must surface usage via onUsage callback");
+  // 流式性能：按帧节流渲染
+  assert.ok(panel.includes("requestAnimationFrame"));
+  // 长回答折叠
+  assert.ok(panel.includes("maybeCollapse"));
+  assert.ok(panel.includes("expand-btn"));
+  // 点击工具栏图标打开侧边栏兜底（Chrome 114/115）
+  assert.ok(bg.includes("setPanelBehavior"));
+});
+
 test("DeepSeek module uses current V4 models and thinking switch", async () => {
   const { text } = (await readAllSources()).find((s) => s.name === "deepseek-api.js");
   const { text: opts } = (await readAllSources()).find((s) => s.name === "options.html");

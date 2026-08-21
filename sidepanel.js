@@ -6,39 +6,55 @@
  *  2. 右键/划词消息（cysider_prompt）自动发送
  *  3. 网页框选截图 + 本地 Tesseract OCR，结果填入输入框
  *  4. 笔记精炼：最后一条回答 → DeepSeek 精炼 → 保存本地 .md
- *  5. 会话导出：本地 Markdown 预览 → 复制 / 保存 .md
+ *  5. 会话导出：一键保存 .md 到本地
+ *  6. 多会话：新聊天 / 历史聊天切换 / 上下文自动截取最近 N 条
+ *  7. Token 统计：输入/输出/缓存命中（本次 + 当前会话累计）
+ *  8. 性能优化：流式按帧渲染、消息增量追加、延迟保存、智能滚动跟随
  * 无任何第三方网络请求。
  */
 (() => {
   "use strict";
 
   const api = globalThis.CysiderDeepSeek;
-  const HISTORY_KEY = "cysiderChatHistory";
+  const SESSIONS_KEY = "cysiderSessions";
+  const ACTIVE_KEY = "cysiderActiveSessionId";
+  const LEGACY_HISTORY_KEY = "cysiderChatHistory";
+  const CTX_WINDOW = 20;      // 发送给 API 的最近消息条数
+  const MAX_SESSIONS = 20;    // 本地保留的最大会话数
+  const COLLAPSE_LIMIT = 320; // 回答高度超过此值（px）自动折叠
   const NOTE_SYSTEM = "你是笔记整理助手。把用户提供的内容精炼成一份结构化中文笔记：保留关键结论、步骤、数据、代码示例；删除冗余和客套；用 Markdown 格式（标题、要点列表、代码块）；控制在 200-500 字。只输出笔记正文。";
 
   const state = {
-    messages: [],
+    sessions: [],
+    activeId: "",
     busy: false,
     controller: null,
     worker: null,
     workerLanguage: "",
     ocrBusy: false,
     lastCaptureId: "",
-    statusTimer: null
+    statusTimer: null,
+    // token 统计：本次 + 当前会话累计
+    lastUsage: null,
+    totalUsage: { prompt: 0, completion: 0, cacheHit: 0, cacheMiss: 0 }
   };
 
-  let messagesEl, inputEl, sendBtn, statusEl, modelTag,
-      ocrBtn, noteBtn, thinkBtn, effortSel, exportBtn, clearBtn, settingsBtn;
+  let messagesEl, inputEl, sendBtn, statusEl, modelTag, sessionTitleEl,
+      ocrBtn, noteBtn, thinkBtn, effortSel, exportBtn, clearBtn, settingsBtn,
+      newBtn, historyBtn, historyPanel, historyList, historyCloseBtn, historyNewBtn,
+      tokenStat;
 
   document.addEventListener("DOMContentLoaded", init);
 
   async function init() {
     cacheDom();
     bindEvents();
-    loadHistory();
+    loadSessions();
     renderAll();
+    renderHistory();
     updateModelTag();
     updateThinkBtn();
+    updateSessionTitle();
     chrome.runtime.sendMessage({ action: "cysider_ready" }).catch(() => {});
   }
 
@@ -49,6 +65,7 @@
     sendBtn = $("sendBtn");
     statusEl = $("status");
     modelTag = $("modelTag");
+    sessionTitleEl = $("sessionTitle");
     ocrBtn = $("ocrBtn");
     noteBtn = $("noteBtn");
     thinkBtn = $("thinkBtn");
@@ -56,6 +73,13 @@
     exportBtn = $("exportBtn");
     clearBtn = $("clearBtn");
     settingsBtn = $("settingsBtn");
+    newBtn = $("newBtn");
+    historyBtn = $("historyBtn");
+    historyPanel = $("historyPanel");
+    historyList = $("historyList");
+    historyCloseBtn = $("historyCloseBtn");
+    historyNewBtn = $("historyNewBtn");
+    tokenStat = $("tokenStat");
   }
 
   function bindEvents() {
@@ -81,6 +105,16 @@
     exportBtn.addEventListener("click", saveExport);
     clearBtn.addEventListener("click", onClear);
     settingsBtn.addEventListener("click", () => chrome.runtime.openOptionsPage());
+    newBtn.addEventListener("click", onNewChat);
+    historyBtn.addEventListener("click", () => { renderHistory(); historyPanel.hidden = false; });
+    historyCloseBtn.addEventListener("click", () => { historyPanel.hidden = true; });
+    historyNewBtn.addEventListener("click", () => { onNewChat(); historyPanel.hidden = true; });
+
+    // 智能滚动跟随：用户向上翻阅历史时不要强制拉回底部，回到底部附近后恢复自动跟随
+    messagesEl.addEventListener("scroll", () => {
+      const nearBottom = messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < 120;
+      userScrolledUp = !nearBottom;
+    }, { passive: true });
 
     chrome.runtime.onMessage.addListener((message) => {
       switch (message && message.action) {
@@ -116,39 +150,224 @@
     });
   }
 
-  /* ============ 会话持久化 ============ */
+  /* ============ 会话持久化（多会话） ============ */
 
-  function loadHistory() {
+  function loadSessions() {
     try {
-      const raw = localStorage.getItem(HISTORY_KEY);
-      const list = raw ? JSON.parse(raw) : [];
-      state.messages = Array.isArray(list) ? list.filter((m) => m && m.role && m.content) : [];
+      const raw = localStorage.getItem(SESSIONS_KEY);
+      const list = raw ? JSON.parse(raw) : null;
+      if (Array.isArray(list) && list.length) {
+        state.sessions = list
+          .filter((s) => s && s.id && Array.isArray(s.messages))
+          .map((s) => ({ id: s.id, title: s.title || "新会话", createdAt: s.createdAt || Date.now(), updatedAt: s.updatedAt || Date.now(), messages: s.messages }));
+      } else {
+        migrateLegacyHistory();
+      }
     } catch (e) {
-      state.messages = [];
+      migrateLegacyHistory();
+    }
+
+    // 确保存在当前会话
+    const active = state.sessions.find((s) => s.id === localStorage.getItem(ACTIVE_KEY));
+    if (!active) {
+      if (state.sessions.length === 0) {
+        state.sessions.push(makeSession());
+      }
+      state.activeId = state.sessions[0].id;
+      localStorage.setItem(ACTIVE_KEY, state.activeId);
+    } else {
+      state.activeId = active.id;
     }
   }
 
-  function saveHistory() {
+  /** 迁移旧版单一聊天记录为第一个会话 */
+  function migrateLegacyHistory() {
+    let legacy = [];
     try {
-      localStorage.setItem(HISTORY_KEY, JSON.stringify(state.messages.slice(-200)));
+      const raw = localStorage.getItem(LEGACY_HISTORY_KEY);
+      const list = raw ? JSON.parse(raw) : [];
+      legacy = Array.isArray(list) ? list.filter((m) => m && m.role && m.content) : [];
     } catch (e) { /* ignore */ }
+    state.sessions = legacy.length ? [makeSession(legacy)] : [makeSession()];
+  }
+
+  function makeSession(messages = []) {
+    const now = Date.now();
+    return {
+      id: "s_" + now.toString(36) + Math.random().toString(36).slice(2, 7),
+      title: "新会话",
+      createdAt: now,
+      updatedAt: now,
+      messages: messages.slice()
+    };
+  }
+
+  function currentSession() {
+    return state.sessions.find((s) => s.id === state.activeId) || state.sessions[0] || null;
+  }
+
+  function saveSessions() {
+    try {
+      // 会话上限：保留最近 MAX_SESSIONS 个
+      if (state.sessions.length > MAX_SESSIONS) {
+        state.sessions = state.sessions.slice(-MAX_SESSIONS);
+        if (!state.sessions.some((s) => s.id === state.activeId)) {
+          state.activeId = state.sessions[state.sessions.length - 1].id;
+          localStorage.setItem(ACTIVE_KEY, state.activeId);
+        }
+      }
+      localStorage.setItem(SESSIONS_KEY, JSON.stringify(state.sessions));
+    } catch (e) { /* ignore */ }
+  }
+
+  /** 用首条用户消息自动命名（不可改） */
+  function ensureTitle(session) {
+    if (session.messages.length === 0) {
+      session.title = "新会话";
+      return;
+    }
+    const first = session.messages.find((m) => m.role === "user");
+    const base = (first && first.content || "新会话").replace(/\s+/g, " ").trim();
+    session.title = base.length > 20 ? base.slice(0, 20) + "…" : base || "新会话";
+  }
+
+  function touchSession(session) {
+    session.updatedAt = Date.now();
+    ensureTitle(session);
+  }
+
+  function updateSessionTitle() {
+    const s = currentSession();
+    sessionTitleEl.textContent = (s && s.title) || "cysider";
+    sessionTitleEl.title = (s && s.title) || "cysider";
   }
 
   /* ============ 渲染 ============ */
 
   function renderAll() {
     messagesEl.textContent = "";
-    if (state.messages.length === 0) {
+    const session = currentSession();
+    const messages = session ? session.messages : [];
+    if (messages.length === 0) {
       const tip = document.createElement("div");
       tip.className = "empty-tip";
       tip.textContent = "你好，我是 cysider ✦\n在下方输入消息，或右键选中网页文字发送给 DeepSeek\n也可以框选截图用本地 OCR 识别文字";
       messagesEl.appendChild(tip);
       return;
     }
-    for (const m of state.messages) {
-      messagesEl.appendChild(buildMessageEl(m.role, m.content, false));
+    // DocumentFragment 一次性插入，减少重排
+    const frag = document.createDocumentFragment();
+    for (const m of messages) {
+      frag.appendChild(buildMessageEl(m.role, m.content, false));
+    }
+    messagesEl.appendChild(frag);
+    // 折叠判断依赖真实布局高度，须在插入 DOM 后进行
+    for (const el of messagesEl.querySelectorAll(".msg.assistant")) {
+      maybeCollapse(el);
     }
     scrollToBottom();
+  }
+
+  function renderHistory() {
+    historyList.textContent = "";
+    const sorted = [...state.sessions].sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+    for (const s of sorted) {
+      const item = document.createElement("div");
+      item.className = "history-item" + (s.id === state.activeId ? " active" : "");
+
+      const title = document.createElement("span");
+      title.className = "h-title";
+      title.textContent = s.title || "新会话";
+      title.title = s.title || "新会话";
+
+      const time = document.createElement("span");
+      time.className = "h-time";
+      time.textContent = formatTime(s.updatedAt || s.createdAt);
+
+      const del = document.createElement("button");
+      del.className = "h-del";
+      del.type = "button";
+      del.textContent = "✕";
+      del.title = "删除该会话";
+      del.addEventListener("click", (event) => {
+        event.stopPropagation();
+        deleteSession(s.id);
+      });
+
+      item.append(title, time, del);
+      item.addEventListener("click", () => switchSession(s.id));
+      historyList.appendChild(item);
+    }
+  }
+
+  function formatTime(ts) {
+    const d = new Date(ts);
+    const now = new Date();
+    const sameDay = d.toDateString() === now.toDateString();
+    const pad = (n) => String(n).padStart(2, "0");
+    if (sameDay) return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    return `${d.getMonth() + 1}/${d.getDate()}`;
+  }
+
+  /* ============ 会话操作 ============ */
+
+  function onNewChat() {
+    if (state.busy) {
+      showStatus("正在生成中，请先停止再新建聊天。", "error", 2500);
+      return;
+    }
+    const session = makeSession();
+    state.sessions.push(session);
+    state.activeId = session.id;
+    localStorage.setItem(ACTIVE_KEY, session.id);
+    saveSessions();
+    updateSessionTitle();
+    renderAll();
+    renderHistory();
+    inputEl.focus();
+    showStatus("已创建新聊天。", "info", 1500);
+  }
+
+  function switchSession(id) {
+    if (state.busy) {
+      showStatus("正在生成中，请先停止再切换会话。", "error", 2500);
+      return;
+    }
+    if (!state.sessions.some((s) => s.id === id)) return;
+    state.activeId = id;
+    localStorage.setItem(ACTIVE_KEY, id);
+    historyPanel.hidden = true;
+    updateSessionTitle();
+    renderAll();
+    showStatus("已切换到历史会话。", "info", 1500);
+  }
+
+  function deleteSession(id) {
+    if (state.sessions.length <= 1) {
+      // 至少保留一个会话：清空后新建
+      const s = currentSession();
+      s.messages = [];
+      s.title = "新会话";
+      s.updatedAt = Date.now();
+      saveSessions();
+      updateSessionTitle();
+      renderAll();
+      renderHistory();
+      showStatus("仅剩一个会话，已清空。", "info", 1800);
+      return;
+    }
+    const idx = state.sessions.findIndex((s) => s.id === id);
+    if (idx < 0) return;
+    state.sessions.splice(idx, 1);
+    if (state.activeId === id) {
+      state.activeId = state.sessions[state.sessions.length - 1].id;
+      localStorage.setItem(ACTIVE_KEY, state.activeId);
+      updateSessionTitle();
+      renderAll();
+    }
+    saveSessions();
+    renderHistory();
+    showStatus("会话已删除。", "info", 1500);
   }
 
   function buildMessageEl(role, content, streaming) {
@@ -165,9 +384,76 @@
     return el;
   }
 
-  function scrollToBottom() {
-    messagesEl.scrollTop = messagesEl.scrollHeight;
+  /* ============ 性能优化：按帧节流渲染 / 增量追加 / 延迟保存 ============ */
+
+  let streamRaf = 0;
+  let pendingStreamEl = null;
+  let pendingStreamText = "";
+  let userScrolledUp = false;
+  let saveTimer = null;
+
+  /** 流式输出按 requestAnimationFrame 合并，避免每个 chunk 强制布局（layout thrashing）导致卡顿 */
+  function scheduleStreamRender(el, text) {
+    pendingStreamEl = el;
+    pendingStreamText = text;
+    if (streamRaf) return;
+    streamRaf = requestAnimationFrame(() => {
+      streamRaf = 0;
+      if (pendingStreamEl) {
+        pendingStreamEl.textContent = pendingStreamText;
+        scrollToBottom();
+      }
+    });
   }
+
+  /** 增量追加一条消息（不清空重建消息区，消息多时流畅） */
+  function appendMessage(role, content, streaming) {
+    if (!messagesEl.querySelector(".msg")) messagesEl.textContent = "";
+    const el = buildMessageEl(role, content, streaming);
+    messagesEl.appendChild(el);
+    scrollToBottom();
+    return el;
+  }
+
+  /** 延迟保存会话，合并连续写入；页面关闭时强制 flush */
+  function scheduleSave() {
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => { saveTimer = null; saveSessions(); }, 400);
+  }
+
+  window.addEventListener("pagehide", () => {
+    if (saveTimer) {
+      clearTimeout(saveTimer);
+      saveTimer = null;
+      saveSessions();
+    }
+  });
+
+  /** 智能滚动：仅在用户位于底部附近时自动滚到底部 */
+  function scrollToBottom() {
+    if (!userScrolledUp) messagesEl.scrollTop = messagesEl.scrollHeight;
+  }
+
+  /** 回答过长时自动折叠，点击展开/收起（只影响显示，不影响数据） */
+  function maybeCollapse(el) {
+    if (!el || el.classList.contains("collapsible")) return;
+    const body = el.querySelector(".markdown-body");
+    if (!body || el.scrollHeight <= COLLAPSE_LIMIT) return;
+    el.classList.add("collapsible");
+    body.classList.add("collapsed");
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "expand-btn";
+    btn.textContent = "展开全部 ▾";
+    btn.addEventListener("click", () => {
+      const isCollapsed = body.classList.toggle("collapsed");
+      btn.textContent = isCollapsed ? "展开全部 ▾" : "收起 ▴";
+      scrollToBottom();
+    });
+    el.appendChild(btn);
+  }
+
+  /* ============ 模型切换（flash ↔ pro） ============ */
 
   async function updateModelTag() {
     try {
@@ -177,8 +463,6 @@
       modelTag.textContent = "deepseek-v4-flash";
     }
   }
-
-  /* ============ 模型切换（flash ↔ pro） ============ */
 
   async function toggleModel() {
     if (state.busy) {
@@ -268,12 +552,16 @@
 
   async function runChat(userText) {
     if (state.busy) return;
+    const session = currentSession();
+    if (!session) return;
     state.busy = true;
     setBusyUi(true);
 
-    state.messages.push({ role: "user", content: userText, ts: Date.now() });
-    saveHistory();
-    renderAll();
+    session.messages.push({ role: "user", content: userText, ts: Date.now() });
+    touchSession(session);
+    scheduleSave();
+    updateSessionTitle();
+    appendMessage("user", userText);
 
     const assistantEl = buildMessageEl("assistant", "", true);
     messagesEl.appendChild(assistantEl);
@@ -282,37 +570,50 @@
     const controller = new AbortController();
     state.controller = controller;
 
+    // 上下文窗口：只发最近 CTX_WINDOW 条，防止上下文无限增长
+    const windowed = session.messages.slice(-CTX_WINDOW);
+    const trimmed = session.messages.length > CTX_WINDOW;
+    const history = windowed.map((m) => ({ role: m.role, content: m.content }));
+
     let acc = "";
-    const history = state.messages.map((m) => ({ role: m.role, content: m.content }));
     try {
       const reply = await api.chat(history, {
         signal: controller.signal,
         onDelta: (piece) => {
           acc += piece;
-          assistantEl.textContent = acc;
-          scrollToBottom();
-        }
+          scheduleStreamRender(assistantEl, acc);
+        },
+        onUsage: (usage) => handleUsage(usage)
       });
-      state.messages.push({ role: "assistant", content: reply, ts: Date.now() });
-      saveHistory();
+      session.messages.push({ role: "assistant", content: reply, ts: Date.now() });
+      touchSession(session);
+      scheduleSave();
+      updateSessionTitle();
       const wrap = document.createElement("div");
       wrap.className = "markdown-body";
       wrap.innerHTML = renderMarkdown(reply);
       assistantEl.classList.remove("streaming");
       assistantEl.textContent = "";
       assistantEl.appendChild(wrap);
+      maybeCollapse(assistantEl);
       scrollToBottom();
+      if (trimmed) {
+        showStatus(`对话较长，本次已截取最近 ${CTX_WINDOW} 条上下文。`, "info", 2500);
+      }
     } catch (error) {
       if (error && error.name === "AbortError") {
         if (acc) {
-          state.messages.push({ role: "assistant", content: acc, ts: Date.now() });
-          saveHistory();
+          session.messages.push({ role: "assistant", content: acc, ts: Date.now() });
+          touchSession(session);
+          scheduleSave();
+          updateSessionTitle();
           const wrap = document.createElement("div");
           wrap.className = "markdown-body";
           wrap.innerHTML = renderMarkdown(acc);
           assistantEl.classList.remove("streaming");
           assistantEl.textContent = "";
           assistantEl.appendChild(wrap);
+          maybeCollapse(assistantEl);
         } else {
           assistantEl.remove();
         }
@@ -330,6 +631,35 @@
       state.controller = null;
       setBusyUi(false);
     }
+  }
+
+  /* ============ Token 统计（本次 + 累计） ============ */
+
+  function handleUsage(usage) {
+    if (!usage) return;
+    const prompt = usage.prompt_tokens || 0;
+    const completion = usage.completion_tokens || 0;
+    const hit = usage.prompt_cache_hit_tokens || 0;
+    const miss = usage.prompt_cache_miss_tokens || 0;
+    state.lastUsage = { prompt, completion, hit, miss };
+    state.totalUsage.prompt += prompt;
+    state.totalUsage.completion += completion;
+    state.totalUsage.cacheHit += hit;
+    state.totalUsage.cacheMiss += miss;
+    renderTokenStat();
+  }
+
+  function renderTokenStat() {
+    if (!state.lastUsage) return;
+    const t = state.totalUsage;
+    const fmt = (n) => n.toLocaleString("en-US");
+    // 两行紧凑排版，避免在窄侧边栏里拉成超长单行
+    tokenStat.innerHTML =
+      `本次 ↑ ${fmt(state.lastUsage.prompt)} · ↓ ${fmt(state.lastUsage.completion)}` +
+      `　累计 ↑ ${fmt(t.prompt)} · ↓ ${fmt(t.completion)}<br>` +
+      `<span class="ts-cache-hit" title="缓存命中（计费更低）">缓存命中 ${fmt(state.lastUsage.hit)}</span>` +
+      ` / <span class="ts-cache-miss" title="缓存未命中">未命中 ${fmt(state.lastUsage.miss)}</span>`;
+    tokenStat.hidden = false;
   }
 
   function abortStream() {
@@ -456,7 +786,9 @@
 
   async function onNoteClick() {
     if (state.busy) return;
-    const lastAssistant = [...state.messages].reverse().find((m) => m.role === "assistant");
+    const session = currentSession();
+    if (!session) return;
+    const lastAssistant = [...session.messages].reverse().find((m) => m.role === "assistant");
     if (!lastAssistant || !lastAssistant.content || lastAssistant.content.length < 20) {
       showStatus("没有可精炼的回答，请先和 cysider 对话一轮。", "error", 3000);
       return;
@@ -485,10 +817,12 @@
   /* ============ 导出会话（⤓ 一键保存本地） ============ */
 
   function buildConversationMarkdown() {
-    if (state.messages.length === 0) return "";
+    const session = currentSession();
+    const messages = session ? session.messages : [];
+    if (messages.length === 0) return "";
     const now = new Date();
     const parts = [`# cysider 对话`, ``, `> 生成时间：${now.toLocaleString("zh-CN")}`, ``];
-    for (const m of state.messages) {
+    for (const m of messages) {
       const label = m.role === "user" ? "用户" : "cysider";
       parts.push(`## ${label}`, ``, m.content.trim(), ``);
     }
@@ -604,10 +938,15 @@
       showStatus("正在生成中，请先停止再清空。", "error", 2500);
       return;
     }
-    state.messages = [];
-    saveHistory();
+    const session = currentSession();
+    if (!session) return;
+    session.messages = [];
+    session.title = "新会话";
+    session.updatedAt = Date.now();
+    saveSessions();
+    updateSessionTitle();
     renderAll();
-    showStatus("会话已清空。", "info", 1500);
+    showStatus("当前会话已清空。", "info", 1500);
   }
 
   /* ============ 状态提示 ============ */

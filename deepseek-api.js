@@ -77,7 +77,7 @@
   /**
    * 发送一次对话。
    * @param {Array<{role:string,content:string}>} messages
-   * @param {{onDelta?: (text:string)=>void, signal?: AbortSignal}} options
+   * @param {{onDelta?: (text:string)=>void, onUsage?: (usage:object)=>void, signal?: AbortSignal}} options
    * @returns {Promise<string>} 完整回复文本
    */
   async function chat(messages, options = {}) {
@@ -126,14 +126,18 @@
       const data = await resp.json();
       const content = data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
       if (typeof content !== "string") throw new Error("DeepSeek 返回内容为空。");
+      if (typeof options.onUsage === "function" && data.usage) {
+        options.onUsage(data.usage);
+      }
       return content;
     }
 
-    // SSE 流式解析
+    // SSE 流式解析（usage 出现在最后一个 chunk 中）
     const reader = resp.body.getReader();
     const decoder = new TextDecoder("utf-8");
     let buffer = "";
     let full = "";
+    let usage = null;
     try {
       for (;;) {
         const { done, value } = await reader.read();
@@ -148,6 +152,7 @@
           if (payload === "[DONE]") continue;
           try {
             const obj = JSON.parse(payload);
+            if (obj.usage) usage = obj.usage;
             const delta = obj.choices && obj.choices[0] && obj.choices[0].delta;
             const piece = (delta && (delta.content || delta.reasoning_content)) || "";
             if (piece) {
@@ -159,6 +164,9 @@
       }
     } finally {
       reader.releaseLock();
+    }
+    if (usage && typeof options.onUsage === "function") {
+      options.onUsage(usage);
     }
     return full;
   }
