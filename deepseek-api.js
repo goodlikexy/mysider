@@ -76,9 +76,11 @@
 
   /**
    * 发送一次对话。
+   * 思考模式返回的 reasoning_content（思考过程）与 content（正文）分离：
+   * 思考内容只通过 onReasoning 透出，绝不混入返回的正文。
    * @param {Array<{role:string,content:string}>} messages
-   * @param {{onDelta?: (text:string)=>void, onUsage?: (usage:object)=>void, signal?: AbortSignal}} options
-   * @returns {Promise<string>} 完整回复文本
+   * @param {{onDelta?: (text:string)=>void, onReasoning?: (text:string)=>void, onUsage?: (usage:object)=>void, signal?: AbortSignal}} options
+   * @returns {Promise<string>} 完整回复文本（仅正文，不含思考过程）
    */
   async function chat(messages, options = {}) {
     const cfg = await getConfig();
@@ -124,8 +126,12 @@
 
     if (!useStream) {
       const data = await resp.json();
-      const content = data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content;
+      const message = data.choices && data.choices[0] && data.choices[0].message;
+      const content = message && message.content;
       if (typeof content !== "string") throw new Error("DeepSeek 返回内容为空。");
+      if (typeof options.onReasoning === "function" && message && message.reasoning_content) {
+        options.onReasoning(message.reasoning_content);
+      }
       if (typeof options.onUsage === "function" && data.usage) {
         options.onUsage(data.usage);
       }
@@ -133,6 +139,8 @@
     }
 
     // SSE 流式解析（usage 出现在最后一个 chunk 中）
+    // 注意：reasoning_content（思考）与 content（正文）必须分开累加，
+    // 否则模型的英文思考会混进回答正文。
     const reader = resp.body.getReader();
     const decoder = new TextDecoder("utf-8");
     let buffer = "";
@@ -154,10 +162,14 @@
             const obj = JSON.parse(payload);
             if (obj.usage) usage = obj.usage;
             const delta = obj.choices && obj.choices[0] && obj.choices[0].delta;
-            const piece = (delta && (delta.content || delta.reasoning_content)) || "";
-            if (piece) {
-              full += piece;
-              options.onDelta(piece);
+            const contentPiece = (delta && delta.content) || "";
+            const reasoningPiece = (delta && delta.reasoning_content) || "";
+            if (contentPiece) {
+              full += contentPiece;
+              if (typeof options.onDelta === "function") options.onDelta(contentPiece);
+            }
+            if (reasoningPiece && typeof options.onReasoning === "function") {
+              options.onReasoning(reasoningPiece);
             }
           } catch (e) { /* 跳过无法解析的行 */ }
         }

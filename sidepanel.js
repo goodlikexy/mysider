@@ -20,8 +20,9 @@
   const LEGACY_HISTORY_KEY = "cysiderChatHistory";
   const CTX_WINDOW = 20;      // 发送给 API 的最近消息条数
   const MAX_SESSIONS = 20;    // 本地保留的最大会话数
-  const COLLAPSE_LIMIT = 320; // 回答高度超过此值（px）自动折叠
   const NOTE_SYSTEM = "你是笔记整理助手。把用户提供的内容精炼成一份结构化中文笔记：保留关键结论、步骤、数据、代码示例；删除冗余和客套；用 Markdown 格式（标题、要点列表、代码块）；控制在 200-500 字。只输出笔记正文。";
+  // 普通聊天的默认系统提示：未明确指定语言时一律用中文回复，避免正文飘英文
+  const CHAT_SYSTEM = "你是 cysider，一个基于 DeepSeek 的中文 AI 助手。默认使用中文回答用户；仅当用户明确要求使用其他语言时，才改用用户指定的语言。回答保持简洁、准确、有条理。";
 
   const state = {
     sessions: [],
@@ -252,13 +253,9 @@
     // DocumentFragment 一次性插入，减少重排
     const frag = document.createDocumentFragment();
     for (const m of messages) {
-      frag.appendChild(buildMessageEl(m.role, m.content, false));
+      frag.appendChild(buildMessageEl(m.role, m.content, false, m.reasoning));
     }
     messagesEl.appendChild(frag);
-    // 折叠判断依赖真实布局高度，须在插入 DOM 后进行
-    for (const el of messagesEl.querySelectorAll(".msg.assistant")) {
-      maybeCollapse(el);
-    }
     scrollToBottom();
   }
 
@@ -364,18 +361,53 @@
     showStatus("会话已删除。", "info", 1500);
   }
 
-  function buildMessageEl(role, content, streaming) {
+  function buildMessageEl(role, content, streaming, reasoning) {
     const el = document.createElement("div");
     el.className = "msg " + role + (streaming ? " streaming" : "");
-    if (role === "assistant" && !streaming) {
+    if (role === "assistant") {
+      // 思考过程折叠块（有则展示，默认收起）放在正文前
+      if (reasoning) {
+        el.appendChild(makeReasoningBlock(reasoning).details);
+      }
       const wrap = document.createElement("div");
       wrap.className = "markdown-body";
-      wrap.innerHTML = renderMarkdown(content);
+      if (streaming) {
+        wrap.textContent = content;
+      } else {
+        try {
+          wrap.innerHTML = renderMarkdown(content);
+        } catch (e) {
+          // 容错兜底：渲染失败时降级为纯文本，保证回答可读、历史不白屏
+          console.error("[cysider] markdown 渲染失败，已降级为纯文本：", e, String(content).slice(0, 200));
+          wrap.textContent = content;
+        }
+      }
       el.appendChild(wrap);
     } else {
       el.textContent = content;
     }
     return el;
+  }
+
+  /** 思考过程折叠块：原生 <details> 默认收起，点击 summary 展开，无状态管理。
+   *  思考内容同样渲染 Markdown（模型思考里常有 ##/表格），失败则降级为纯文本。 */
+  function makeReasoningBlock(text) {
+    const details = document.createElement("details");
+    details.className = "reasoning";
+    const summary = document.createElement("summary");
+    summary.textContent = "💭 思考过程";
+    const body = document.createElement("div");
+    body.className = "reasoning-body";
+    if (text) {
+      try {
+        body.innerHTML = renderMarkdown(text);
+      } catch (e) {
+        console.error("[cysider] 思考内容渲染失败，保留纯文本：", e);
+        body.textContent = text;
+      }
+    }
+    details.append(summary, body);
+    return { details, body };
   }
 
   /* ============ 性能优化：按帧节流渲染 / 增量追加 / 延迟保存 ============ */
@@ -426,25 +458,6 @@
   /** 智能滚动：仅在用户位于底部附近时自动滚到底部 */
   function scrollToBottom() {
     if (!userScrolledUp) messagesEl.scrollTop = messagesEl.scrollHeight;
-  }
-
-  /** 回答过长时自动折叠，点击展开/收起（只影响显示，不影响数据） */
-  function maybeCollapse(el) {
-    if (!el || el.classList.contains("collapsible")) return;
-    const body = el.querySelector(".markdown-body");
-    if (!body || el.scrollHeight <= COLLAPSE_LIMIT) return;
-    el.classList.add("collapsible");
-    body.classList.add("collapsed");
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "expand-btn";
-    btn.textContent = "展开全部 ▾";
-    btn.addEventListener("click", () => {
-      const isCollapsed = body.classList.toggle("collapsed");
-      btn.textContent = isCollapsed ? "展开全部 ▾" : "收起 ▴";
-      scrollToBottom();
-    });
-    el.appendChild(btn);
   }
 
   /* ============ 模型切换（flash ↔ pro） ============ */
@@ -558,55 +571,78 @@
     appendMessage("user", userText);
 
     const assistantEl = buildMessageEl("assistant", "", true);
+    const contentEl = assistantEl.querySelector(".markdown-body");
     messagesEl.appendChild(assistantEl);
     scrollToBottom();
 
     const controller = new AbortController();
     state.controller = controller;
 
-    // 上下文窗口：只发最近 CTX_WINDOW 条，防止上下文无限增长
+    // 上下文窗口：只发最近 CTX_WINDOW 条，防止上下文无限增长。
+    // 注入默认中文回复的系统提示（不存入会话）；思考内容不回传，避免英文思考被重新喂给模型
     const windowed = session.messages.slice(-CTX_WINDOW);
     const trimmed = session.messages.length > CTX_WINDOW;
     const history = windowed.map((m) => ({ role: m.role, content: m.content }));
+    const payload = [{ role: "system", content: CHAT_SYSTEM }].concat(history);
 
     let acc = "";
+    let reasoningAcc = "";
+    let reasoningEl = null; // makeReasoningBlock 的 { details, body }
+
+    /** 流式结束（正常完成或被停止）：渲染正文 Markdown，保留思考折叠块 */
+    const finishStream = (text) => {
+      if (reasoningEl && !reasoningAcc) reasoningEl.details.remove();
+      try {
+        contentEl.innerHTML = renderMarkdown(text);
+      } catch (e) {
+        // 容错兜底：渲染失败时降级为纯文本，不再把整条消息删掉
+        console.error("[cysider] markdown 渲染失败，已降级为纯文本：", e, String(text).slice(0, 200));
+        contentEl.textContent = text;
+      }
+      // 思考折叠块流式期间以纯文本实时更新，结束时统一渲染 Markdown
+      if (reasoningEl && reasoningAcc) {
+        try {
+          reasoningEl.body.innerHTML = renderMarkdown(reasoningAcc);
+        } catch (e) {
+          console.error("[cysider] 思考内容渲染失败，保留纯文本：", e);
+        }
+      }
+      assistantEl.classList.remove("streaming");
+      scrollToBottom();
+    };
+
     try {
-      const reply = await api.chat(history, {
+      const reply = await api.chat(payload, {
         signal: controller.signal,
         onDelta: (piece) => {
           acc += piece;
-          scheduleStreamRender(assistantEl, acc);
+          scheduleStreamRender(contentEl, acc);
+        },
+        onReasoning: (piece) => {
+          reasoningAcc += piece;
+          if (!reasoningEl) {
+            reasoningEl = makeReasoningBlock();
+            assistantEl.insertBefore(reasoningEl.details, contentEl);
+          }
+          reasoningEl.body.textContent = reasoningAcc;
         }
       });
-      session.messages.push({ role: "assistant", content: reply, ts: Date.now() });
+      session.messages.push({ role: "assistant", content: reply, reasoning: reasoningAcc || undefined, ts: Date.now() });
       touchSession(session);
       scheduleSave();
       updateSessionTitle();
-      const wrap = document.createElement("div");
-      wrap.className = "markdown-body";
-      wrap.innerHTML = renderMarkdown(reply);
-      assistantEl.classList.remove("streaming");
-      assistantEl.textContent = "";
-      assistantEl.appendChild(wrap);
-      maybeCollapse(assistantEl);
-      scrollToBottom();
+      finishStream(reply);
       if (trimmed) {
         showStatus(`对话较长，本次已截取最近 ${CTX_WINDOW} 条上下文。`, "info", 2500);
       }
     } catch (error) {
       if (error && error.name === "AbortError") {
-        if (acc) {
-          session.messages.push({ role: "assistant", content: acc, ts: Date.now() });
+        if (acc || reasoningAcc) {
+          session.messages.push({ role: "assistant", content: acc, reasoning: reasoningAcc || undefined, ts: Date.now() });
           touchSession(session);
           scheduleSave();
           updateSessionTitle();
-          const wrap = document.createElement("div");
-          wrap.className = "markdown-body";
-          wrap.innerHTML = renderMarkdown(acc);
-          assistantEl.classList.remove("streaming");
-          assistantEl.textContent = "";
-          assistantEl.appendChild(wrap);
-          maybeCollapse(assistantEl);
+          finishStream(acc);
         } else {
           assistantEl.remove();
         }
@@ -951,7 +987,27 @@
   }
 
   function renderMarkdown(text) {
-    const lines = String(text || "").replace(/\r\n/g, "\n").split("\n");
+    let raw = String(text || "").replace(/\r\n/g, "\n");
+    // 输入归一化 1：模型/代理偶发输出字面 "\n" 转义（全文无真实换行）→ 转成真实换行，
+    // 否则整段会被吞进单个标题，##/表格全部原样显示。仅在无真实换行时转换，避免破坏代码示例。
+    if (!raw.includes("\n") && /\\[rn]/.test(raw)) {
+      raw = raw.replace(/\\r\\n/g, "\n").replace(/\\n/g, "\n").replace(/\\r/g, "\n");
+    }
+    // 输入归一化 2：整段被单个 Markdown 围栏包裹（如 ```markdown ... ```）→ 剥离围栏按正文渲染；
+    // 带明确代码语言（js/py/json 等）的整体围栏视为真代码块，不解包。
+    const rawLines = raw.split("\n");
+    const firstLine = rawLines.find((l) => l.trim() !== "");
+    const lastLine = [...rawLines].reverse().find((l) => l.trim() !== "");
+    if (firstLine && lastLine && firstLine !== lastLine) {
+      const open = firstLine.trim().match(/^(`{3,}|~{3,})([\w-]*)\s*$/);
+      const close = lastLine.trim().match(/^(`{3,}|~{3,})\s*$/);
+      if (open && close && (!open[2] || /^(markdown|md)$/i.test(open[2]))) {
+        rawLines.shift();
+        rawLines.pop();
+        raw = rawLines.join("\n");
+      }
+    }
+    const lines = raw.split("\n");
     const html = [];
     let i = 0;
 
@@ -1043,7 +1099,12 @@
       if (trimmed.includes("|") && lines[i + 1] && /^\s*\|?[\s:|-]+\|?\s*$/.test(lines[i + 1]) && lines[i + 1].includes("-")) {
         closeList();
         const rows = [];
-        while (i < lines.length && lines[i].trim().includes("|")) rows.push(lines[i].trim());
+        // 注意：必须 i++，否则会无限循环把同一行塞进 rows，直至内存爆掉抛
+        // RangeError: Invalid array length（表格回答会直接导致发送失败）
+        while (i < lines.length && lines[i].trim().includes("|")) {
+          rows.push(lines[i].trim());
+          i++;
+        }
         i--;
         if (rows.length >= 2) {
           const cells = (r) => r.replace(/^\||\|$/g, "").split("|").map((c) => c.trim());

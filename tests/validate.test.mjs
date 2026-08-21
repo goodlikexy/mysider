@@ -26,6 +26,21 @@ async function readAllSources() {
   })));
 }
 
+/** 按花括号配平从源码提取自包含函数（用于执行 renderMarkdown 回归测试） */
+function extractFunction(src, name) {
+  const marker = "function " + name + "(";
+  const start = src.indexOf(marker);
+  assert.ok(start >= 0, `function ${name} must exist`);
+  const brace = src.indexOf("{", start);
+  let depth = 0;
+  let i = brace;
+  for (; i < src.length; i++) {
+    if (src[i] === "{") depth++;
+    else if (src[i] === "}") { depth--; if (depth === 0) break; }
+  }
+  return src.slice(start, i + 1);
+}
+
 test("manifest declares the cysider contract", () => {
   assert.equal(manifest.name, "cysider");
   assert.equal(manifest.version, "0.2.0");
@@ -104,11 +119,21 @@ test("side panel supports multi-session and streaming perf", async () => {
   assert.ok(panel.includes("slice(-CTX_WINDOW)"));
   // 流式性能：按帧节流渲染
   assert.ok(panel.includes("requestAnimationFrame"));
-  // 长回答折叠
-  assert.ok(panel.includes("maybeCollapse"));
-  assert.ok(panel.includes("expand-btn"));
+  // 回答不自动折叠（仅思考过程折叠）：不再出现 maybeCollapse / expand-btn
+  assert.ok(!panel.includes("maybeCollapse"), "long answers must not be auto-collapsed");
+  assert.ok(!panel.includes("expand-btn"), "no expand button for answers");
   // 点击工具栏图标打开侧边栏兜底（Chrome 114/115）
   assert.ok(bg.includes("setPanelBehavior"));
+});
+
+test("side panel uses the bundled LXGW WenKai font for messages", async () => {
+  const { text: css } = (await readAllSources()).find((s) => s.name === "sidepanel.css");
+  const { text: panel } = (await readAllSources()).find((s) => s.name === "sidepanel.js");
+  // 消息区/输入框字体栈必须以霞鹜文楷开头，且不能退回到纯系统字体
+  assert.match(css, /\.messages, \.msg, \.markdown-body, #input \{\s*\n\s*font-family: "LXGW WenKai"/);
+  assert.ok(!css.includes(".expand-btn"), "collapsed-answer styles must be removed");
+  // 思考过程折叠块仍保留
+  assert.ok(panel.includes("makeReasoningBlock"), "thinking fold must remain");
 });
 
 test("DeepSeek module uses current V4 models and thinking switch", async () => {
@@ -124,6 +149,81 @@ test("DeepSeek module uses current V4 models and thinking switch", async () => {
   assert.ok(panel.includes("toggleThinking"));
   assert.ok(panel.includes("thinkBtn"));
   assert.ok(panel.includes("toggleModel"), "model tag must be clickable to switch models");
+});
+
+test("thinking is separated from the answer and replies default to Chinese", async () => {
+  const { text: api } = (await readAllSources()).find((s) => s.name === "deepseek-api.js");
+  const { text: panel } = (await readAllSources()).find((s) => s.name === "sidepanel.js");
+  const { text: css } = (await readAllSources()).find((s) => s.name === "sidepanel.css");
+  // 思考与正文分离：禁止把 reasoning_content 拼进正文
+  assert.ok(!api.includes("delta.content || delta.reasoning_content"), "reasoning must not be concatenated into the answer");
+  assert.ok(api.includes("onReasoning"), "chat must expose an onReasoning callback");
+  assert.ok(api.includes("contentPiece"), "stream must extract content piece separately");
+  assert.ok(api.includes("reasoningPiece"), "stream must extract reasoning piece separately");
+  // 默认中文回复系统提示
+  assert.ok(panel.includes("CHAT_SYSTEM"), "chat must inject a default system prompt");
+  assert.ok(panel.includes("默认使用中文"), "system prompt must default to Chinese");
+  // 思考折叠展示
+  assert.ok(panel.includes("makeReasoningBlock"), "panel must build a collapsible reasoning block");
+  assert.ok(panel.includes("reasoning-body"), "panel must render the reasoning body");
+  assert.ok(panel.includes("m.reasoning"), "history rebuild must carry stored reasoning");
+  assert.ok(css.includes(".reasoning-body"), "css must style the reasoning body");
+});
+
+test("markdown table rows must not infinite-loop (Invalid array length regression)", async () => {
+  const { text } = (await readAllSources()).find((s) => s.name === "sidepanel.js");
+  // 表格收集循环必须推进 i：缺失 i++ 会在遇到表格回答时死循环塞同一行，
+  // 直至内存爆掉抛 RangeError: Invalid array length（表现为"发送失败"）
+  assert.match(text, /while \(i < lines\.length && lines\[i\]\.trim\(\)\.includes\("\|"\)\) \{\s*\n\s*rows\.push\(lines\[i\]\.trim\(\)\);\s*\n\s*i\+\+;/);
+  assert.ok(!text.includes(") rows.push(lines[i].trim());"), "table row loop body must include i++");
+});
+
+test("renderMarkdown renders markdown and survives hostile input", async () => {
+  const { text } = (await readAllSources()).find((s) => s.name === "sidepanel.js");
+  const code = [
+    extractFunction(text, "escapeHtml"),
+    extractFunction(text, "inlineMarkdown"),
+    extractFunction(text, "renderMarkdown")
+  ].join("\n");
+  const { renderMarkdown } = new Function(code + "\n;return { renderMarkdown };")();
+
+  // 正常内容：标题/表格/加粗全部渲染，无原始 Markdown 残片
+  const content = `## 先厘清两个概念
+
+### 插件（Plugin）
+
+这是**加粗**。
+
+| 列A | 列B |
+|---|---|
+| 1 | 2 |`;
+  const out = renderMarkdown(content);
+  assert.ok(out.includes("<h2>"), "h2 must render");
+  assert.ok(out.includes("<h3>"), "h3 must render");
+  assert.ok(out.includes("<table>"), "table must render");
+  assert.ok(out.includes("<strong>"), "bold must render");
+  assert.ok(!out.includes("##"), "no raw heading residue");
+  assert.ok(!out.includes("| 列A"), "no raw table residue");
+
+  // 整段被 ```markdown 围栏包裹 → 解包渲染，而不是按代码块原样显示
+  const fenced = "```markdown\n" + content + "\n```";
+  const fencedOut = renderMarkdown(fenced);
+  assert.ok(fencedOut.includes("<h2>"), "fenced markdown must be unwrapped");
+  assert.ok(!fencedOut.includes("<pre>"), "fenced markdown must not render as a code block");
+
+  // 字面 \n 转义（全文无真实换行）→ 归一化后正常渲染
+  const escaped = content.replace(/\n/g, "\\n");
+  const escapedOut = renderMarkdown(escaped);
+  assert.ok(escapedOut.includes("<h2>"), "escaped newlines must be normalized");
+
+  // 带明确代码语言的整体围栏 → 保持代码块，不解包
+  const js = "```js\nconst a = 1;\n```";
+  assert.ok(renderMarkdown(js).includes("<pre>"), "real code fence stays a code block");
+
+  // 永不抛异常（含过往触发 RangeError 的畸形输入）
+  assert.doesNotThrow(() => renderMarkdown("**".repeat(100000)));
+  assert.doesNotThrow(() => renderMarkdown("[".repeat(100000)));
+  assert.doesNotThrow(() => renderMarkdown("| ".repeat(100000)));
 });
 
 test("side panel OCR stays fully local", async () => {
